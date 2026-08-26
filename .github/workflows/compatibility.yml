@@ -94,6 +94,11 @@ jobs:
           go-version-file: 'tests/gocase/go.mod'
           cache: false
 
+      # Pull the old-version image up front so the test does not race a lazy
+      # pull inside the container lifecycle.
+      - name: Pull old kvrocks image
+        run: docker pull docker.io/apache/kvrocks:${KVROCKS_OLD_VERSION#v}
+
       # Each job runs on a fresh runner, so GOCACHE starts empty and the go
       # test result cache cannot replay one version's result for another.
       # KVROCKS_OLD_VERSION is read at runtime and is NOT part of the go test
@@ -103,4 +108,4 @@ jobs:
       - name: Run compatibility test
         run: |
           cd tests/gocase
-          go test -run TestCompatibilityAllTypes ./integration/compatibility/
+          go test -tags compat -run TestCompatibilityAllTypes ./integration/compatibility/
