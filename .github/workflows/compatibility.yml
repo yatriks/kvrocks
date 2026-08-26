@@ -35,20 +35,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  compatibility-test:
+  build:
+    name: Build current kvrocks image
     runs-on: ubuntu-22.04
-    env:
-      # Test old-version data against the PR's own build, not the released
-      # :latest image, so an encoding regression in the change under test
-      # is caught.
-      KVROCKS_NEW_VERSION: current
     steps:
       - uses: actions/checkout@v6
 
       # The old-version images are pulled from Docker Hub by the test; only
-      # the "new" side is built here, once, and reused for every version.
-      # Uses the same buildx method as the nightly image build; push defaults
-      # to false, so the image stays local.
+      # the "new" side is built here, once, and handed to the parallel test
+      # jobs. Uses the same buildx method as the nightly image build; push
+      # defaults to false, so the image stays local.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
 
@@ -59,20 +55,53 @@ jobs:
           load: true
           tags: apache/kvrocks:current
 
+      - name: Save image
+        run: docker save apache/kvrocks:current | gzip > /tmp/kvrocks-current.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kvrocks-current-image
+          path: /tmp/kvrocks-current.tar.gz
+          retention-days: 1
+
+  compatibility-test:
+    name: "${{ matrix.version }} -> current"
+    runs-on: ubuntu-22.04
+    needs: build
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        version: [v2.3.0, v2.6.0, v2.7.0, v2.10.0, v2.14.0, v2.15.0]
+    env:
+      KVROCKS_OLD_VERSION: ${{ matrix.version }}
+      # Test old-version data against the PR's own build, not the released
+      # :latest image, so an encoding regression in the change under test
+      # is caught.
+      KVROCKS_NEW_VERSION: current
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: kvrocks-current-image
+          path: /tmp
+
+      - name: Load image
+        run: gunzip -c /tmp/kvrocks-current.tar.gz | docker load
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: 'tests/gocase/go.mod'
           cache: false
 
-      - name: Run compatibility test for all old versions
+      # Each job runs on a fresh runner, so GOCACHE starts empty and the go
+      # test result cache cannot replay one version's result for another.
+      # KVROCKS_OLD_VERSION is read at runtime and is NOT part of the go test
+      # cache key, so if a shared cache is ever added (actions/cache on
+      # GOCACHE, or collapsing the matrix into a single looping job), version
+      # the cache key or pass -count=1 to go test.
+      - name: Run compatibility test
         run: |
-          set -e
           cd tests/gocase
-          for v in v2.3.0 v2.6.0 v2.7.0 v2.10.0 v2.14.0 v2.15.0; do
-            echo "=== $v -> current ==="
-            # -count=1 is required: the go test result cache keys on the
-            # binary and -run flags but not on KVROCKS_OLD_VERSION, so
-            # without it every version after the first replays the first
-            # version's cached pass.
-            KVROCKS_OLD_VERSION="$v" go test -count=1 -run TestCompatibilityAllTypes ./integration/compatibility/
-          done
+          go test -run TestCompatibilityAllTypes ./integration/compatibility/
