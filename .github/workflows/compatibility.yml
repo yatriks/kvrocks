@@ -70,7 +70,6 @@ jobs:
     needs: build
     strategy:
       fail-fast: false
-      max-parallel: 4
       matrix:
         version: [v2.3.0, v2.6.0, v2.7.0, v2.10.0, v2.14.0, v2.15.0]
     env:
