@@ -22,10 +22,13 @@ package compatibility
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	dimage "github.com/docker/docker/api/types/image"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -54,11 +57,23 @@ func init() {
 func startKvrocksContainer(ctx context.Context, t *testing.T, image, volumeName string) (testcontainers.Container, error) {
 	client, err := testcontainers.NewDockerClientWithOpts(ctx)
 	if err != nil {
-		fmt.Printf("Can't connect to the Docker API")
+		return nil, fmt.Errorf("connect to docker: %w", err)
 	}
 	imageInspect, err := client.ImageInspect(ctx, image)
 	if err != nil {
-		fmt.Printf("Can't inspect image %s", image)
+		// Image not present locally (e.g. fresh CI runner): pull it first.
+		// Container creation would pull anyway, but the entrypoint rewrite
+		// below needs the image's config.
+		rc, pullErr := client.ImagePull(ctx, image, dimage.PullOptions{})
+		if pullErr != nil {
+			return nil, fmt.Errorf("pull image %s: %w", image, pullErr)
+		}
+		_, _ = io.Copy(io.Discard, rc) // consume until the pull completes
+		rc.Close()
+		imageInspect, err = client.ImageInspect(ctx, image)
+		if err != nil {
+			return nil, fmt.Errorf("inspect image %s after pull: %w", image, err)
+		}
 	}
 	originalEntrypointCmd := strings.Join(imageInspect.Config.Entrypoint, " ")
 	workingDir := imageInspect.Config.WorkingDir
